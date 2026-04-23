@@ -1,0 +1,81 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Stores user-specific data like preferences and Strava tokens.",
+      "type": "object",
+      "properties": {
+        "stravaToken": { "type": "string" },
+        "stravaRefreshToken": { "type": "string" },
+        "stravaExpiresAt": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Activity": {
+      "title": "Sport Activity",
+      "description": "A sport activity either from Strava or manual entry.",
+      "type": "object",
+      "properties": {
+        "stravaId": { "type": "string" },
+        "name": { "type": "string" },
+        "sportType": { "type": "string" },
+        "distance": { "type": "number" },
+        "duration": { "type": "number" },
+        "speed": { "type": "number" },
+        "calories": { "type": "number" },
+        "heartRate": { "type": "number" },
+        "source": { "type": "string", "enum": ["strava", "manual"] },
+        "recordedAt": { "type": "string", "format": "date-time" },
+        "intensity": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["name", "sportType", "source", "recordedAt"]
+    },
+    "Meal": {
+      "title": "Log of a meal",
+      "description": "A meal recorded by the user, analyzed by AI.",
+      "type": "object",
+      "properties": {
+        "description": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "calories": { "type": "number" },
+        "proteins": { "type": "number" },
+        "carbs": { "type": "number" },
+        "fats": { "type": "number" },
+        "weightInGrams": { "type": "number" },
+        "recordedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recordedAt"]
+    },
+    "ChatMessage": {
+      "title": "AI Coach Chat Message",
+      "description": "Message log between the AI coach and the user.",
+      "type": "object",
+      "properties": {
+        "role": { "type": "string", "enum": ["user", "model", "system"] },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["role", "text", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profile document."
+    },
+    "/users/{userId}/activities/{activityId}": {
+      "schema": { "$ref": "#/entities/Activity" },
+      "description": "User's sport activities."
+    },
+    "/users/{userId}/meals/{mealId}": {
+      "schema": { "$ref": "#/entities/Meal" },
+      "description": "User's recorded meals."
+    },
+    "/users/{userId}/chatHistory/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Chat log between user and AI."
+    }
+  }
+}

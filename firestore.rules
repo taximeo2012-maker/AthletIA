@@ -1,0 +1,106 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Primitive Helpers
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null; }
+
+    // Users Collection
+    match /users/{userId} {
+      function isValidUser(data) {
+        return (!('stravaToken' in data) || (data.stravaToken is string))
+        && (!('stravaRefreshToken' in data) || (data.stravaRefreshToken is string))
+        && (!('stravaExpiresAt' in data) || data.stravaExpiresAt is number);
+      }
+
+      allow get: if isSignedIn() && request.auth.uid == userId;
+      allow list: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
+      allow update: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
+
+      match /activities/{activityId} {
+        function isValidActivity(data) {
+          return data.keys().hasOnly(['stravaId', 'name', 'sportType', 'distance', 'duration', 'speed', 'calories', 'heartRate', 'source', 'recordedAt', 'intensity', 'notes'])
+          && data.name is string && data.name.size() > 0 && data.name.size() <= 200
+          && data.sportType is string && data.sportType.size() > 0 && data.sportType.size() <= 50
+          && data.source is string && data.source.matches('^(strava|manual)$')
+          && data.recordedAt is string && data.recordedAt.size() <= 50
+          && ( !('stravaId' in data) || (data.stravaId is string && data.stravaId.size() <= 100) )
+          && ( !('distance' in data) || data.distance is number )
+          && ( !('duration' in data) || data.duration is number )
+          && ( !('speed' in data) || data.speed is number )
+          && ( !('calories' in data) || data.calories is number )
+          && ( !('heartRate' in data) || data.heartRate is number )
+          && ( !('intensity' in data) || (data.intensity is string && data.intensity.size() <= 50) )
+          && ( !('notes' in data) || (data.notes is string && data.notes.size() <= 1000) );
+        }
+
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(activityId);
+        allow list: if isSignedIn() && request.auth.uid == userId && isValidId(userId);
+        allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(activityId) && isValidActivity(incoming());
+        allow update: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(activityId) && isValidActivity(incoming());
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(activityId);
+      }
+
+      match /meals/{mealId} {
+        function isValidMeal(data) {
+          return data.keys().hasOnly(['description', 'imageUrl', 'calories', 'proteins', 'carbs', 'fats', 'recordedAt', 'weightInGrams'])
+          && data.recordedAt is string && data.recordedAt.size() <= 50
+          && ( !('description' in data) || (data.description is string && data.description.size() <= 1500) )
+          && ( !('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 2048) )
+          && ( !('calories' in data) || data.calories is number )
+          && ( !('proteins' in data) || data.proteins is number )
+          && ( !('carbs' in data) || data.carbs is number )
+          && ( !('fats' in data) || data.fats is number )
+          && ( !('weightInGrams' in data) || data.weightInGrams is number );
+        }
+
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(mealId);
+        allow list: if isSignedIn() && request.auth.uid == userId && isValidId(userId);
+        allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(mealId) && isValidMeal(incoming());
+        allow update: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(mealId) && isValidMeal(incoming());
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(mealId);
+      }
+
+      match /events/{eventId} {
+        function isValidEvent(data) {
+          return data.keys().hasOnly(['title', 'date', 'type', 'notes', 'createdAt'])
+          && data.title is string && data.title.size() > 0 && data.title.size() <= 100
+          && data.date is string
+          && data.type is string
+          && (!('notes' in data) || data.notes is string)
+          && data.createdAt is string;
+        }
+        allow get: if isSignedIn() && request.auth.uid == userId;
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() && request.auth.uid == userId && isValidEvent(incoming());
+        allow update: if isSignedIn() && request.auth.uid == userId && isValidEvent(incoming());
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+      }
+
+      match /chatHistory/{messageId} {
+        function isValidMessage(data) {
+          return data.keys().hasOnly(['role', 'text', 'createdAt'])
+          && data.role is string && data.role.matches('^(user|model|system)$')
+          && data.text is string && data.text.size() > 0 && data.text.size() <= 10000
+          && data.createdAt is string;
+        }
+
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(messageId);
+        allow list: if isSignedIn() && request.auth.uid == userId && isValidId(userId);
+        allow create: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(messageId) && isValidMessage(incoming());
+        allow update: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(messageId) && isValidMessage(incoming());
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(userId) && isValidId(messageId);
+      }
+    }
+  }
+}

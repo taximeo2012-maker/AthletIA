@@ -1,0 +1,9 @@
+{
+  "name": "AthletIA",
+  "description": "Smart sports and nutrition tracker connected to Strava with an AI coach.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
