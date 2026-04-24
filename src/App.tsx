@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { auth, db } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { Home, MessageCircle, Utensils } from 'lucide-react';
+import { Home, MessageCircle, Utensils, Calendar, ChefHat } from 'lucide-react';
 import { motion } from 'motion/react';
 import { Dashboard } from './pages/Dashboard';
 import { Journal } from './pages/Journal';
 import { Coach } from './pages/Coach';
+import { TrainingPrograms } from './pages/TrainingPrograms';
 import { Login } from './pages/Login';
+import { Cuisine } from './pages/Cuisine';
 
 function BottomNav() {
   const navigate = useNavigate();
@@ -16,6 +18,8 @@ function BottomNav() {
   const navItems = [
     { path: '/', label: 'Bilan', icon: Home },
     { path: '/journal', label: 'Journal', icon: Utensils },
+    { path: '/cuisine', label: 'Cuisine', icon: ChefHat },
+    { path: '/prog', label: 'Plan', icon: Calendar },
     { path: '/coach', label: 'Coach', icon: MessageCircle },
   ];
 
@@ -97,6 +101,8 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
         <Route path="/journal" element={<RequireAuth><Journal /></RequireAuth>} />
+        <Route path="/cuisine" element={<RequireAuth><Cuisine /></RequireAuth>} />
+        <Route path="/prog" element={<RequireAuth><TrainingPrograms /></RequireAuth>} />
         <Route path="/coach" element={<RequireAuth><Coach /></RequireAuth>} />
       </Routes>
     </BrowserRouter>

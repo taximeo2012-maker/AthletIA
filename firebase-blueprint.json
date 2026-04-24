@@ -8,6 +8,7 @@
         "stravaToken": { "type": "string" },
         "stravaRefreshToken": { "type": "string" },
         "stravaExpiresAt": { "type": "number" },
+        "aiTone": { "type": "string", "enum": ["encouraging", "direct", "humorous"], "description": "Preferred tone for the AI coach." },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" }
       }
@@ -58,6 +59,57 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["role", "text", "createdAt"]
+    },
+    "Badge": {
+      "title": "Achievement Badge",
+      "description": "User achievements for motivation.",
+      "type": "object",
+      "properties": {
+        "badgeId": { "type": "string" },
+        "label": { "type": "string" },
+        "icon": { "type": "string" },
+        "unlockedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["badgeId", "label", "icon", "unlockedAt"]
+    },
+    "TrainingProgram": {
+      "title": "AI Training Program",
+      "description": "A generated multi-week training plan.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "goal": { "type": "string" },
+        "duration": { "type": "number" },
+        "durationUnit": { "type": "string", "enum": ["days", "weeks"] },
+        "weeksJson": { "type": "string", "description": "JSON string of the program structure" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "goal", "weeksJson", "createdAt"]
+    },
+    "Recipe": {
+      "title": "AI Generated Recipe",
+      "description": "Custom recipes proposed by the coach.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "ingredients": { "type": "string" },
+        "instructions": { "type": "string" },
+        "calories": { "type": "number" },
+        "reason": { "type": "string", "description": "Why this recipe was proposed." },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ShoppingList": {
+      "title": "Smart Shopping List",
+      "description": "Weekly shopping list derived from training plans.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "items": { "type": "string", "description": "Markdown list of items by category." },
+        "nutritionalInfo": { "type": "string", "description": "Nutritional benefits and advice." },
+        "createdAt": { "type": "string", "format": "date-time" }
+      }
     }
   },
   "firestore": {
@@ -76,6 +128,22 @@
     "/users/{userId}/chatHistory/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessage" },
       "description": "Chat log between user and AI."
+    },
+    "/users/{userId}/badges/{badgeId}": {
+      "schema": { "$ref": "#/entities/Badge" },
+      "description": "Unlocked achievements."
+    },
+    "/users/{userId}/trainingPrograms/{programId}": {
+      "schema": { "$ref": "#/entities/TrainingProgram" },
+      "description": "Generated training plans."
+    },
+    "/users/{userId}/recipes/{recipeId}": {
+      "schema": { "$ref": "#/entities/Recipe" },
+      "description": "Proposed recipes."
+    },
+    "/users/{userId}/shoppingLists/{listId}": {
+      "schema": { "$ref": "#/entities/ShoppingList" },
+      "description": "Smart shopping lists."
     }
   }
 }

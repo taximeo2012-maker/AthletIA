@@ -1,17 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { db, auth } from '../firebase';
-import { collection, addDoc, query, orderBy, onSnapshot, getDocs, limit, doc, updateDoc, deleteDoc, serverTimestamp } from 'firebase/firestore';
+import { collection, addDoc, query, orderBy, onSnapshot, getDocs, limit, doc, updateDoc, deleteDoc } from 'firebase/firestore';
 import { GoogleGenAI, Modality, Type } from '@google/genai';
-import { Send, Bot, Loader2, Mic, Volume2, Square, Zap } from 'lucide-react';
+import { generateContentWithRetry } from '../lib/aiUtils';
+import { Send, Bot, Loader2, Mic, Volume2, Zap } from 'lucide-react';
 import Markdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
-
 import { ScrollArea } from '../../components/ui/scroll-area';
 
 export function Coach() {
   const [messages, setMessages] = useState<any[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [aiTone, setAiTone] = useState<string>('encouraging');
   const [isListening, setIsListening] = useState(false);
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
@@ -25,9 +26,23 @@ export function Coach() {
     );
     const unSub = onSnapshot(q, (snap) => {
       setMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => {
+      console.error("Error fetching chat history:", error);
     });
+
+    const uRef = doc(db, 'users', auth.currentUser.uid);
+    const unSubUser = onSnapshot(uRef, (d) => {
+      if (d.exists()) {
+        const data = d.data();
+        if (data.aiTone) setAiTone(data.aiTone);
+      }
+    }, (error) => {
+      console.error("Error fetching user data:", error);
+    });
+
     return () => {
       unSub();
+      unSubUser();
       if ('speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
@@ -117,23 +132,20 @@ export function Coach() {
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
-      const fetchAudio = ai.models.generateContent({
+      const aiResponse = await generateContentWithRetry(ai, {
         model: "gemini-3.1-flash-tts-preview",
         contents: [{ parts: [{ text: cleanText }] }],
         config: {
           responseModalities: [Modality.AUDIO],
           speechConfig: {
-              voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } },
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Charon' } },
           },
         },
       });
 
-      const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout TTS")), 40000));
-      const response = await Promise.race([fetchAudio, timeoutPromise]) as any;
-
       if ((window as any).__requestedAudioId !== messageId) return;
 
-      const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      const base64Audio = aiResponse.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
       if (!base64Audio) throw new Error("Audio nul");
 
       setLoadingAudioId(null);
@@ -151,16 +163,16 @@ export function Coach() {
       const dataView = new DataView(bytes.buffer);
       
       for (let i = 0; i < sampleCount; i++) {
-         channelData[i] = dataView.getInt16(i * 2, true) / 32768.0;
+        channelData[i] = dataView.getInt16(i * 2, true) / 32768.0;
       }
       
       const source = audioCtx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioCtx.destination);
       source.onended = () => {
-           if ((window as any).__requestedAudioId === messageId) {
-              setPlayingId(null);
-           }
+        if ((window as any).__requestedAudioId === messageId) {
+          setPlayingId(null);
+        }
       };
       source.start();
       (window as any).__currentAudioSource = source;
@@ -206,45 +218,68 @@ export function Coach() {
       const eventsSnap = await getDocs(query(collection(db, `users/${auth.currentUser.uid}/events`), orderBy('date', 'asc'), limit(5)));
       const upcomingEvents = eventsSnap.docs.map(d => ({ id: d.id, ...d.data() })).filter((e: any) => new Date(e.date) >= new Date(new Date().setHours(0,0,0,0)));
 
+      const programsSnap = await getDocs(query(collection(db, `users/${auth.currentUser.uid}/trainingPrograms`), orderBy('createdAt', 'desc'), limit(3)));
+      const programs = programsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const recipesSnap = await getDocs(query(collection(db, `users/${auth.currentUser.uid}/recipes`), orderBy('createdAt', 'desc'), limit(3)));
+      const recipes = recipesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+      const listsSnap = await getDocs(query(collection(db, `users/${auth.currentUser.uid}/shoppingLists`), orderBy('createdAt', 'desc'), limit(1)));
+      const shoppingLists = listsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
       const contextData = {
         recentMeals: meals,
         recentActivities: activities,
-        upcomingGoalsAndEvents: upcomingEvents
+        upcomingGoalsAndEvents: upcomingEvents,
+        trainingPlans: programs,
+        suggestedRecipes: recipes,
+        currentShoppingList: shoppingLists
       };
 
-      const systemInstruction = `Tu es AthletIA, un coach sportif et nutritionnel motivant. Tu réponds de manière courte, percutante et amicale. Tu peux désormais interagir avec le journal de l'utilisateur.
-Voici le contexte de l'utilisateur (ses repas, activités récentes, et objectifs, avec leurs IDs respectifs) :
+      const tonePrompts: Record<string, string> = {
+        encouraging: "Tu es très encourageant, positif et motivant. Utilise des mots inspirants.",
+        direct: "Tu es très direct, analytique et factuel. Pas de fioritures, juste les faits et ce qu'il faut améliorer.",
+        humorous: "Tu es drôle, un peu sarcastique et plein d'esprit. Utilise l'humour pour motiver."
+      };
+
+      const systemInstruction = `Tu es AthletIA, un coach sportif et nutritionnel motivant. ${tonePrompts[aiTone] || tonePrompts.encouraging} Tu réponds de manière courte, percutante et amicale. Tu peux désormais interagir avec le journal de l'utilisateur.
+Voici le contexte de l'utilisateur (ses repas, activités récentes, objectifs et plans d'entraînement, avec leurs IDs respectifs) :
 ${JSON.stringify(contextData)}
 
-Utilise ce contexte pour répondre intelligemment à ses questions. S'il te demande d'ajouter, modifier ou supprimer un repas, un entraînement (activité) ou un objectif, tu DOIS utiliser les outils (functions) à ta disposition. Pour les fonctions de modification/suppression, cherche l'ID exact dans le contexte fourni. S'il dit "je viens de courir", utilise l'outil pour l'ajouter, puis félicite-le. Prends en compte ses futurs objectifs pour tes conseils. 
-IMPORTANT: Pour éviter que la voix ne soit trop longue à générer, tu dois IMPÉRATIVEMENT répondre de manière EXTRÊMEMENT COURTE (1 à 2 phrases MAXIMUM). Va droit au but. N'utilise JAMAIS d'emojis.`;
+Utilise ce contexte pour répondre intelligemment à ses questions. S'il te demande d'ajouter, modifier ou supprimer un repas, un entraînement (activité), un objectif ou un plan d'entraînement, tu DOIS utiliser les outils (functions) à ta disposition.
+Tu as aussi des outils pour GENERER DES RECETTES et des LISTES DE COURSES.
+
+CRITIQUE: Lorsque l'utilisateur demande de générer une recette ou une liste de courses, tu DOIS TOUJOURS appeler la fonction correspondante (generate_recipe ou generate_shopping_list). Ne te contente pas de lister les articles dans ton message texte, utilise l'outil pour que ce soit sauvegardé dans son espace Cuisine.
+Une fois l'outil appelé, confirme brièvement à l'utilisateur que c'est fait et disponible dans l'onglet Cuisine.
+
+IMPORTANT: Réponds de manière EXTRÊMEMENT COURTE (1 à 2 phrases MAXIMUM). Va droit au but. N'utilise JAMAIS d'emojis.`;
 
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       const tools = [{
         functionDeclarations: [
           {
             name: "add_meal",
-            description: "Ajoute un repas au journal. Utilise cette fonction si l'utilisateur te demande d'ajouter ce qu'il a mangé.",
+            description: "Ajoute un repas au journal.",
             parameters: { type: Type.OBJECT, properties: { description: {type: Type.STRING}, calories: {type: Type.NUMBER}, proteins: {type: Type.NUMBER}, carbs: {type: Type.NUMBER}, fats: {type: Type.NUMBER}, weightInGrams: {type: Type.NUMBER} }, required: ["description", "calories", "proteins", "carbs", "fats"] }
           },
           {
             name: "update_meal",
-            description: "Modifie un repas existant. Nécessite l'ID du repas.",
+            description: "Modifie un repas existant. ID requis.",
             parameters: { type: Type.OBJECT, properties: { id: {type: Type.STRING}, description: {type: Type.STRING}, calories: {type: Type.NUMBER}, proteins: {type: Type.NUMBER}, carbs: {type: Type.NUMBER}, fats: {type: Type.NUMBER}, weightInGrams: {type: Type.NUMBER} }, required: ["id"] }
           },
           {
             name: "delete_meal",
-            description: "Supprime un repas. Nécessite l'ID du repas.",
+            description: "Supprime un repas. ID requis.",
             parameters: { type: Type.OBJECT, properties: { id: {type: Type.STRING} }, required: ["id"] }
           },
           {
             name: "add_activity",
             description: "Ajoute un entraînement/activité sportive.",
-            parameters: { type: Type.OBJECT, properties: { name: {type: Type.STRING}, sportType: {type: Type.STRING, description: "Workout, WeightTraining, Crossfit, ou Other"}, duration: {type: Type.NUMBER, description: "Durée en minutes"}, intensity: {type: Type.STRING, description: "Légère, Modérée, Intense ou Extrême"} }, required: ["name", "sportType", "duration", "intensity"] }
+            parameters: { type: Type.OBJECT, properties: { name: {type: Type.STRING}, sportType: {type: Type.STRING}, duration: {type: Type.NUMBER}, intensity: {type: Type.STRING} }, required: ["name", "sportType", "duration", "intensity"] }
           },
           {
             name: "update_activity",
-            description: "Modifie un entraînement existant. Nécessite l'ID.",
+            description: "Modifie un entraînement existant. ID requis.",
             parameters: { type: Type.OBJECT, properties: { id: {type: Type.STRING}, name: {type: Type.STRING}, sportType: {type: Type.STRING}, duration: {type: Type.NUMBER}, intensity: {type: Type.STRING} }, required: ["id"] }
           },
           {
@@ -255,71 +290,140 @@ IMPORTANT: Pour éviter que la voix ne soit trop longue à générer, tu dois IM
           {
             name: "add_event",
             description: "Ajoute un événement ou objectif (course, compétition).",
-            parameters: { type: Type.OBJECT, properties: { title: {type: Type.STRING}, date: {type: Type.STRING, description: "Format YYYY-MM-DD"}, type: {type: Type.STRING, description: "Compétition, Match, Objectif Perso, Autre"}, notes: {type: Type.STRING} }, required: ["title", "date", "type"] }
+            parameters: { type: Type.OBJECT, properties: { title: {type: Type.STRING}, date: {type: Type.STRING}, type: {type: Type.STRING}, notes: {type: Type.STRING} }, required: ["title", "date", "type"] }
           },
           {
             name: "update_event",
-            description: "Modifie un événement ou objectif. Nécessite son ID.",
+            description: "Modifie un événement ou objectif. ID requis.",
             parameters: { type: Type.OBJECT, properties: { id: {type: Type.STRING}, title: {type: Type.STRING}, date: {type: Type.STRING}, type: {type: Type.STRING}, notes: {type: Type.STRING} }, required: ["id"] }
           },
           {
             name: "delete_event",
             description: "Supprime un événement ou objectif via son ID.",
             parameters: { type: Type.OBJECT, properties: { id: {type: Type.STRING} }, required: ["id"] }
+          },
+          {
+            name: "update_training_program",
+            description: "Modifie un plan d'entraînement existant.",
+            parameters: { 
+              type: Type.OBJECT, 
+              properties: { 
+                id: {type: Type.STRING}, 
+                title: {type: Type.STRING}, 
+                goal: {type: Type.STRING},
+                weeksJson: {type: Type.STRING}
+              }, 
+              required: ["id"] 
+            }
+          },
+          {
+            name: "delete_training_program",
+            description: "Supprime un plan d'entraînement via son ID.",
+            parameters: { type: Type.OBJECT, properties: { id: {type: Type.STRING} }, required: ["id"] }
+          },
+          {
+            name: "generate_recipe",
+            description: "Génère une recette adaptée aux efforts récents.",
+            parameters: { 
+              type: Type.OBJECT, 
+              properties: { 
+                title: {type: Type.STRING}, 
+                ingredients: {type: Type.STRING},
+                instructions: {type: Type.STRING},
+                calories: {type: Type.NUMBER},
+                reason: {type: Type.STRING}
+              }, 
+              required: ["title", "ingredients", "instructions", "calories", "reason"] 
+            }
+          },
+          {
+            name: "generate_shopping_list",
+            description: "Génère une liste de courses basée sur le plan d'entraînement avec analyse nutritionnelle.",
+            parameters: { 
+              type: Type.OBJECT, 
+              properties: { 
+                title: {type: Type.STRING}, 
+                items: {type: Type.STRING, description: "Articles groupés par catégories (Légumes, Protéines, etc.)"},
+                nutritionalInfo: {type: Type.STRING, description: "Détails sur l'importance nutritionnelle de cette liste pour l'athlète."}
+              }, 
+              required: ["title", "items", "nutritionalInfo"] 
+            }
           }
         ]
       }];
 
-      const response = await ai.models.generateContent({
-        model: "gemini-2.5-pro",
-        contents: userMessage,
-        config: { systemInstruction, tools }
+      const response = await generateContentWithRetry(ai, {
+        model: "gemini-3-flash-preview",
+        contents: [{ role: "user", parts: [{ text: userMessage }] }],
+        config: { 
+          systemInstruction,
+          tools 
+        }
       });
 
-      let aiText = response.text || "";
+      let aiText = "";
+      try {
+        aiText = response.text || "";
+      } catch (e) {
+        // often happens if there are only function calls
+      }
 
-      if (response.functionCalls && response.functionCalls.length > 0) {
-         for (const call of response.functionCalls) {
-            const args = call.args as any;
-            try {
-               switch(call.name) {
-                 case 'add_meal':
-                   await addDoc(collection(db, `users/${auth.currentUser.uid}/meals`), { ...args, imageUrl: "ajouté par coach", recordedAt: new Date().toISOString() });
-                   break;
-                 case 'update_meal':
-                   const { id: mId, ...mData } = args;
-                   if (Object.keys(mData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/meals`, mId), mData);
-                   break;
-                 case 'delete_meal':
-                   await deleteDoc(doc(db, `users/${auth.currentUser.uid}/meals`, args.id));
-                   break;
-                 case 'add_activity':
-                   await addDoc(collection(db, `users/${auth.currentUser.uid}/activities`), { ...args, source: "manual", recordedAt: new Date().toISOString() });
-                   break;
-                 case 'update_activity':
-                   { const { id: aId, ...aData } = args;
-                     if (Object.keys(aData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/activities`, aId), aData); }
-                   break;
-                 case 'delete_activity':
-                   await deleteDoc(doc(db, `users/${auth.currentUser.uid}/activities`, args.id));
-                   break;
-                 case 'add_event':
-                   await addDoc(collection(db, `users/${auth.currentUser.uid}/events`), { ...args, createdAt: new Date().toISOString() });
-                   break;
-                 case 'update_event':
-                   { const { id: eId, ...eData } = args;
-                     if (Object.keys(eData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/events`, eId), eData); }
-                   break;
-                 case 'delete_event':
-                   await deleteDoc(doc(db, `users/${auth.currentUser.uid}/events`, args.id));
-                   break;
-               }
-            } catch (err) { console.error("Error executing function call:", err); }
-         }
-         
-         if (!aiText) {
-             aiText = "J'ai bien pris en compte ta demande et mis à jour ton journal ! 💪";
-         }
+      const functionCallsBuffer = response.functionCalls || [];
+      if (functionCallsBuffer && functionCallsBuffer.length > 0) {
+        for (const call of functionCallsBuffer) {
+          const args = call.args as any;
+          try {
+            switch(call.name) {
+              case 'add_meal':
+                await addDoc(collection(db, `users/${auth.currentUser.uid}/meals`), { ...args, imageUrl: "ajouté par coach", recordedAt: new Date().toISOString() });
+                break;
+              case 'update_meal':
+                { const { id: mId, ...mData } = args;
+                  if (Object.keys(mData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/meals`, mId), mData); }
+                break;
+              case 'delete_meal':
+                await deleteDoc(doc(db, `users/${auth.currentUser.uid}/meals`, args.id));
+                break;
+              case 'add_activity':
+                await addDoc(collection(db, `users/${auth.currentUser.uid}/activities`), { ...args, source: "manual", recordedAt: new Date().toISOString() });
+                break;
+              case 'update_activity':
+                { const { id: aId, ...aData } = args;
+                  if (Object.keys(aData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/activities`, aId), aData); }
+                break;
+              case 'delete_activity':
+                await deleteDoc(doc(db, `users/${auth.currentUser.uid}/activities`, args.id));
+                break;
+              case 'add_event':
+                await addDoc(collection(db, `users/${auth.currentUser.uid}/events`), { ...args, createdAt: new Date().toISOString() });
+                break;
+              case 'update_event':
+                { const { id: eId, ...eData } = args;
+                  if (Object.keys(eData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/events`, eId), eData); }
+                break;
+              case 'delete_event':
+                await deleteDoc(doc(db, `users/${auth.currentUser.uid}/events`, args.id));
+                break;
+              case 'update_training_program':
+                { const { id: pId, ...pData } = args;
+                  if (Object.keys(pData).length > 0) await updateDoc(doc(db, `users/${auth.currentUser.uid}/trainingPrograms`, pId), { ...pData, updatedAt: new Date().toISOString() }); }
+                break;
+              case 'delete_training_program':
+                await deleteDoc(doc(db, `users/${auth.currentUser.uid}/trainingPrograms`, args.id));
+                break;
+              case 'generate_recipe':
+                await addDoc(collection(db, `users/${auth.currentUser.uid}/recipes`), { ...args, createdAt: new Date().toISOString() });
+                break;
+              case 'generate_shopping_list':
+                await addDoc(collection(db, `users/${auth.currentUser.uid}/shoppingLists`), { ...args, createdAt: new Date().toISOString() });
+                break;
+            }
+          } catch (err) { console.error("Error executing function call:", err); }
+        }
+        
+        if (!aiText) {
+          aiText = "J'ai bien pris en compte ta demande ! 💪";
+        }
       }
 
       if (!aiText) aiText = "Opération effectuée !";
@@ -356,10 +460,10 @@ IMPORTANT: Pour éviter que la voix ne soit trop longue à générer, tu dois IM
         <div className="p-4 space-y-6">
           {messages.length === 0 && (
             <motion.div initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center justify-center h-full text-center p-6 opacity-80 mt-10">
-               <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mb-6">
-                 <Zap size={48} className="text-orange-500/50" />
-               </div>
-               <p className="text-sm font-bold text-slate-400 uppercase tracking-widest leading-relaxed">Prêt pour l'entraînement. <br/>Pose tes questions ou debrief ta session.</p>
+              <div className="w-24 h-24 rounded-full bg-white/5 flex items-center justify-center mb-6">
+                <Zap size={48} className="text-orange-500/50" />
+              </div>
+              <p className="text-sm font-bold text-slate-400 uppercase tracking-widest leading-relaxed">Prêt pour l'entraînement. <br/>Pose tes questions ou debrief ta session.</p>
             </motion.div>
           )}
           

@@ -3,6 +3,7 @@ import { Camera, Plus, Activity as ActivityIcon, Utensils, X, Image as ImageIcon
 import { db, auth } from '../firebase';
 import { collection, addDoc, query, orderBy, onSnapshot, serverTimestamp, deleteDoc, doc, updateDoc } from 'firebase/firestore';
 import { GoogleGenAI, Type } from '@google/genai';
+import { generateContentWithRetry } from '../lib/aiUtils';
 import { format } from 'date-fns';
 import { fr } from 'date-fns/locale';
 import { motion, AnimatePresence } from 'motion/react';
@@ -70,8 +71,8 @@ export function Journal() {
       const base64Data = (event.target?.result as string).split(',')[1];
       try {
         const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-        const response = await ai.models.generateContent({
-          model: "gemini-2.5-flash",
+        const responseData = await generateContentWithRetry(ai, {
+          model: "gemini-3-flash-preview",
           contents: {
             parts: [
               { inlineData: { mimeType: file.type, data: base64Data } },
@@ -95,7 +96,7 @@ export function Journal() {
           }
         });
 
-        const result = JSON.parse(response.text.trim());
+        const result = JSON.parse(responseData.text.trim());
         if (auth.currentUser) {
           await addDoc(collection(db, `users/${auth.currentUser.uid}/meals`), {
              description: result.description,
@@ -217,18 +218,28 @@ export function Journal() {
                     layout
                     initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, scale: 0.9 }} transition={{ delay: i * 0.05 }}
                     key={act.id} 
-                    className="bg-[#1A1C23] p-4 rounded-2xl border border-white/5 flex items-center justify-between relative group"
+                    className="bg-[#1A1C23] p-4 rounded-2xl border border-white/5 flex flex-col relative group"
                   >
-                    <div className="flex-1">
-                      <h3 className="font-bold text-white text-sm tracking-tight">{act.name}</h3>
-                      <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500 mt-1">{act.sportType} <span className="text-orange-500">•</span> {act.intensity}</p>
+                    <div className="flex items-center justify-between z-10 relative">
+                      <div className="flex-1">
+                        <h3 className="font-bold text-white text-sm tracking-tight">{act.name}</h3>
+                        <p className="text-[10px] uppercase tracking-widest font-bold text-slate-500 mt-1">{act.sportType} <span className="text-orange-500">•</span> {act.intensity} {act.distance ? `• ${act.distance.toFixed(1)} km` : ''}</p>
+                      </div>
+                      <div className="text-right flex items-center space-x-4">
+                        <span className="block font-black text-xl italic tracking-tighter text-white">{act.duration} <span className="text-[10px] text-slate-500">MIN</span></span>
+                        <button onClick={() => handleDeleteItem('activities', act.id)} className="text-slate-600 hover:text-red-500 transition-colors">
+                           <Trash2 size={18} />
+                        </button>
+                      </div>
                     </div>
-                    <div className="text-right flex items-center space-x-4">
-                      <span className="block font-black text-xl italic tracking-tighter text-white">{act.duration} <span className="text-[10px] text-slate-500">MIN</span></span>
-                      <button onClick={() => handleDeleteItem('activities', act.id)} className="text-slate-600 hover:text-red-500 transition-colors">
-                         <Trash2 size={18} />
-                      </button>
-                    </div>
+                    {act.insights && (
+                      <div className="mt-3 pt-3 border-t border-white/5 z-10 relative">
+                        <div className="flex items-center space-x-2 text-cyan-400 mb-1">
+                          <span className="text-[9px] font-black uppercase tracking-widest bg-cyan-500/10 px-2 py-0.5 rounded border border-cyan-500/20">Coach IA</span>
+                        </div>
+                        <p className="text-xs text-slate-300 font-medium leading-relaxed">{act.insights}</p>
+                      </div>
+                    )}
                   </motion.div>
                ))
              )
