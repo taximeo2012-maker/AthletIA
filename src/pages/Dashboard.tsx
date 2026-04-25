@@ -64,6 +64,58 @@ export function Dashboard() {
     fetchUserAndData();
   }, []);
 
+  const fetchWeather = async (lat?: number, lon?: number) => {
+    try {
+      const latitude = lat || 48.8566; // Paris default
+      const longitude = lon || 2.3522;
+      
+      const res = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current_weather=true`);
+      const data = await res.json();
+      
+      if (data.current_weather) {
+        const temp = Math.round(data.current_weather.temperature);
+        const code = data.current_weather.weathercode;
+        
+        let condition = 'Dégagé';
+        if (code >= 1 && code <= 3) condition = 'Partiellement nuageux';
+        else if (code >= 45 && code <= 48) condition = 'Brouillard';
+        else if (code >= 51 && code <= 67) condition = 'Pluie';
+        else if (code >= 71 && code <= 77) condition = 'Neige';
+        else if (code >= 80 && code <= 82) condition = 'Averses';
+        else if (code >= 95 && code <= 99) condition = 'Orage';
+
+        let advice = `Il fait ${temp}°C et c'est ${condition.toLowerCase()}. `;
+        if (temp < 5) advice += "Couvre-toi bien pour ta sortie !";
+        else if (temp > 25) advice += "Pense à bien t'hydrater !";
+        else advice += "C'est un temps idéal pour s'entraîner.";
+
+        if (process.env.GEMINI_API_KEY) {
+           const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+           const prompt = `L'athlète s'apprête à s'entraîner. Météo: ${temp}°C, ${condition}. Donne un conseil sportif très court (1 phrase) adapté.`;
+           try {
+             const aiResp = await generateContentWithRetry(ai, {
+               model: "gemini-1.5-flash",
+               contents: [{ role: "user", parts: [{ text: prompt }] }],
+               generationConfig: { maxOutputTokens: 60 }
+             });
+             const aiText = aiResp.text.trim().replace(/^"|"$/g, '');
+             if (aiText) advice = aiText;
+           } catch (e) {
+             console.warn("AI Weather advice failed, using template", e);
+           }
+        }
+
+        setWeather({
+          temp,
+          condition,
+          advice
+        });
+      }
+    } catch(err) {
+      console.error("Weather fetch err", err);
+    }
+  };
+
   const fetchJournalData = async () => {
     if (!auth.currentUser) return;
     try {
@@ -100,13 +152,15 @@ export function Dashboard() {
       const total = actsInfo.reduce((acc, curr) => acc + (curr.distance || 0), 0);
       setTotalKm(total);
 
-      // Mock Weather fetch (could be real if we had a City in user profile)
-      setWeather({
-        temp: 18,
-        condition: 'Ensoleillé',
-        icon: Smile,
-        advice: "Conditions parfaites pour ta séance prévue ! Profite du soleil."
-      });
+      // Real Weather fetch with geolocation
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => fetchWeather(pos.coords.latitude, pos.coords.longitude),
+          () => fetchWeather() // fallback to Paris
+        );
+      } else {
+        fetchWeather();
+      }
 
       // Check Badges
       checkAndAwardBadges(actsInfo, currentStreak, userBadges);
